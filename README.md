@@ -10,7 +10,7 @@ and a camera video simulator of a spot in linear motion.
 | Path | Contents |
 | --- | --- |
 | `studies/` | Batch simulation scripts; each one writes its figures to `docs/figures/` |
-| `simulator/` | Interactive simulator: `cassegrain_gui.py` (Python/Tkinter) and its MATLAB port `cassegrain_simulator.m`; video simulator: `cassegrain_video.py` (engine, command line, Python API) and `cassegrain_video_gui.py` (GUI) |
+| `simulator/` | Interactive simulator: `cassegrain_gui.py` (Python/Tkinter) and its MATLAB port `cassegrain_simulator.m`; video simulator: `cassegrain_video.py` (engine, command line, Python API) and `cassegrain_video_gui.py` (GUI), with the MATLAB ports `cassegrain_video.m` and `cassegrain_video_gui.m` |
 | `docs/` | `FINDINGS` (results) and `THEORY` (background) reports, Markdown sources + PDFs |
 | `docs/figures/` | All generated figures (most are embedded in `FINDINGS.md`) |
 | `tools/` | Report pipeline: Markdown-to-PDF builder, PDF table-layout check, GUI screenshot |
@@ -49,7 +49,14 @@ python tools/verify_pdf_layout.py               # table pagination check
 ```
 
 MATLAB: add `simulator/` to the path, then run `cassegrain_simulator`
-(or `cassegrain_simulator selftest`).
+(or `cassegrain_simulator selftest`). The video simulator has MATLAB ports
+too (R2020a or newer, no toolboxes):
+
+```
+cassegrain_video_gui                       % video simulator (GUI)
+cassegrain_video run.json --set speed=500  % video simulator (script)
+cassegrain_video --selftest                % headless check
+```
 
 ## Video simulator
 
@@ -124,3 +131,30 @@ Model limits:
 - Motion is a straight line at constant speed.
 - Frame-to-frame jitter is uncorrelated between frames.
 - Noise-free image centroids agree with the true centre within 0.01 px.
+
+### MATLAB version
+
+`cassegrain_video.m` and `cassegrain_video_gui.m` are MATLAB ports with the
+same settings, JSON configuration files, output files and command-line
+options, so a configuration saved by one version runs in the other.
+
+- Noise-free frames and the ground truth match the Python version (frames
+  can differ by 1 DN in a few pixels that sit on a rounding boundary).
+- Noise has the same statistics but uses MATLAB's random generator, so a noisy
+  frame is not bit-identical to the Python frame with the same seed.
+- MP4 previews need VideoWriter's MPEG-4 profile (Windows, macOS). Elsewhere a
+  GIF preview is written instead.
+- The GUI renders in MATLAB's own thread. During a run it stays responsive
+  between frames, so Cancel works. An edited field takes effect when you press
+  Enter or leave the field.
+
+From MATLAB code:
+
+```
+cv = cassegrain_video('api');
+sim = cv.VideoSimulator(cv.VideoParams('width', 1280, 'height', 1024, ...
+    'pixel_um', 5.86, 'frames', 200, 'fps', 100, 'exposure_ms', 5, ...
+    'speed', 2000, 'direction_deg', 30));
+[frame_dn, truth] = sim.render_frame(0);   % one frame + ground truth
+sim.run(cv.OutputSpec('name', 'fast_pass', 'mat', true, 'raw', 'single'));
+```
