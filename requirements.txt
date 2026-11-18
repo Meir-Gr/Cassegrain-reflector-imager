@@ -1,0 +1,10 @@
+# simulations + GUI
+numpy
+scipy
+matplotlib
+# report tooling (tools/)
+reportlab
+pillow
+pypdf
+# MP4 previews of the video simulator (optional: without it, previews are GIF)
+imageio-ffmpeg

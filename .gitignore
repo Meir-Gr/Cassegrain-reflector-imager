@@ -1,0 +1,10 @@
+# Video-simulator runs (large generated data, recreated on demand)
+output/
+
+# Disposable math-render cache of the PDF builder
+.cache/
+
+# Python virtual environment and bytecode
+.venv/
+__pycache__/
+*.py[cod]
