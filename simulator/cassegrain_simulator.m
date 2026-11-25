@@ -1,14 +1,13 @@
 function cassegrain_simulator(mode)
-%CASSEGRAIN_SIMULATOR Interactive defocused-image simulator (single file).
+%CASSEGRAIN_SIMULATOR Interactive defocused-image simulator.
 %
 %   cassegrain_simulator            opens the GUI
 %   cassegrain_simulator selftest   headless compute check (no GUI)
 %
 % MATLAB port of cassegrain_gui.py, feature-identical:
 %   * System parameters: primary diameter, obstruction ratio, vane width,
-%     3 independent vane angles, wavelength, focal ratio.
-%   * Live sliders: defocus W020 (+-64 waves), bandwidth d(lambda)/lambda
-%     (flat spectrum, 0-0.4), source diameter [lambda/D], jitter RMS
+%     3 independent vane angles, wavelength bounds [um], focal ratio.
+%   * Live sliders: defocus W020 (+-64 waves), source diameter [lambda/D], jitter RMS
 %     [lambda/D], linear motion blur [um on sensor] + direction.
 %
 % Physics (scalar Fourier optics, all-reflective =>  achromatic focus):
@@ -35,7 +34,7 @@ end
 % ====================== state & physics (pure) ==========================
 
 function S = initState()
-S.pad  = 2;                       % image pixel = lambda*F#/2 (Nyquist)
+S.pad  = 2;                       % samples per central lambda F# (mono initially)
 S.tierTable = [32 512; 64 1024];  % |W020| limit -> pupil samples
 S.wMax = 64;
 S = setParams(S, 200, 0.35, 4, [90 210 330], 550, 10);
@@ -58,10 +57,9 @@ S.ang  = angles_deg(:).';
 S.lam  = lambda_nm * 1e-9;
 S.fnum = fnum;
 S.lodArcsec  = rad2deg(S.lam / S.D) * 3600;
-S.pixUm      = S.lam * S.fnum / S.pad * 1e6;
 S.dzPerWaveMm = 8 * S.lam * S.fnum^2 * 1e3;
 S.tiers   = containers.Map('KeyType', 'double', 'ValueType', 'any');
-S.specKey = '';
+S.specKey = [];
 S.specF   = [];
 S.facKey  = '';
 S.fac     = [];
@@ -77,26 +75,21 @@ for k = 1:size(S.tierTable, 1)
 end
 end
 
-function nl = nLambda(S, w, b)
-% enough spectral samples that adjacent sub-images shift < ~1 ring width
-if b <= 0
-    nl = 1;
-else
-    nl = min(15, max(3, round(3 + 20 * b + 0.35 * b * abs(w) * S.pad)));
-end
-end
-
-function [S, t] = getTier(S, npup)
+function [S, t] = getTier(S, npup, pad)
 if isKey(S.tiers, npup)
     t = S.tiers(npup);
-    return
+    if t.pad == pad, return; end
 end
-n  = npup * S.pad;
-dx = S.D / npup;
+n = 64 * ceil(npup * pad / 64);
+if n > 3072
+    error('cassegrain:sampling', ...
+        'Band and defocus need a %d^2 grid (limit 3072); narrow the band or reduce defocus', n);
+end
+dx = S.D * pad / n;
 c  = single(((0:n-1) - n/2) * dx);
 [X, Y] = meshgrid(c, c);
 f  = single(fftfreqv(n));
-t  = struct('n', n, 'X', X, 'Y', Y, 'rr2', X.^2 + Y.^2, ...
+t  = struct('n', n, 'pad', pad, 'X', X, 'Y', Y, 'rr2', X.^2 + Y.^2, ...
             'fy', f(:), 'fx', f(:).');
 t.q  = sqrt(t.fy.^2 + t.fx.^2);          % cycles/px, n x n
 t.q2 = t.q.^2;
@@ -124,10 +117,11 @@ end
 
 function [S, F, t] = psfSpectrum(S, w, b)
 npup = nPupilFor(S, w);
-key  = sprintf('%.4f_%.4f_%d', w, b, npup);
-[S, t] = getTier(S, npup);
-if ~strcmp(S.specKey, key)
-    nl  = nLambda(S, w, b);
+key = [w, b, npup];
+nl = cassegrain_spectrum.n_lambda(w, b);
+S.pad = 2 / cassegrain_spectrum.short_rel(b);
+[S, t] = getTier(S, npup, S.pad);
+if ~isequal(S.specKey, key)
     acc = single(0);
     for k = 1:nl
         if nl == 1, rel = 1; else, rel = 1 - b/2 + b*(k - 0.5)/nl; end
@@ -154,7 +148,7 @@ end
 
 function [S, fac] = mtfFactor(S, t, srcLod, jitLod, motLod, motDeg)
 % Combined source/jitter/drift factor, cached across defocus changes.
-key = sprintf('%.4f_%.4f_%.6f_%.1f_%d', srcLod, jitLod, motLod, motDeg, t.n);
+key = sprintf('%.4f_%.4f_%.6f_%.1f_%d_%.17g', srcLod, jitLod, motLod, motDeg, t.n, t.pad);
 if strcmp(S.facKey, key)
     fac = S.fac;
     return
@@ -182,7 +176,7 @@ function v = diskFactor(x)
 % 2*J1(x)/x via lookup table: besselj on megapixel grids is slow
 persistent vals stepInv nv
 if isempty(vals)
-    nv = 4096;  xmax = 90;                 % covers src<=16 lam/D at q_max
+    nv = 16384;  xmax = 256;               % src<=16, pad<=3072/512, |q|<=sqrt(1/2)
     xs = linspace(0, xmax, nv);
     v0 = 2 * besselj(1, xs) ./ xs;  v0(1) = 1;
     vals = single(v0);  stepInv = single((nv - 1) / xmax);
@@ -219,6 +213,7 @@ end
 
 function buildGui()
 S = initState();
+b = 0;
 imP = gobjects(0);          % persistent image objects: CData updates are
 imH = gobjects(0);          % far cheaper than recreating them each frame
 lastRender = tic;
@@ -232,18 +227,19 @@ gl.ColumnWidth = {300, '1x'};
 % ---- left control column -------------------------------------------
 lp = uipanel(gl, 'Title', 'Controls');
 lp.Layout.Row = 1;  lp.Layout.Column = 1;
-lg = uigridlayout(lp, [29 2]);
-lg.RowHeight = [repmat({22}, 1, 8), {28}, {26}, ...
-                repmat({18, 40, 16}, 1, 6), {22}];
+lg = uigridlayout(lp, [27 2]);
+lg.RowHeight = [repmat({22}, 1, 9), {28}, {26}, ...
+                repmat({18, 40, 16}, 1, 5), {22}];
 lg.ColumnWidth = {'1.6x', '1x'};
 lg.RowSpacing = 2;  lg.Padding = [6 6 6 6];
 
 paramDefs = {'Primary diameter D [mm]', 200; 'Obstruction ratio d/D', 0.35; ...
              'Vane width [mm]', 4; 'Vane angle 1 [deg]', 90; ...
              'Vane angle 2 [deg]', 210; 'Vane angle 3 [deg]', 330; ...
-             'Wavelength [nm]', 550; 'Focal ratio F#', 10};
-edits = gobjects(1, 8);
-for k = 1:8
+             'Lower wavelength [um]', 0.55; 'Upper wavelength [um]', 0.55; ...
+             'Focal ratio F#', 10};
+edits = gobjects(1, size(paramDefs, 1));
+for k = 1:numel(edits)
     lab = uilabel(lg, 'Text', paramDefs{k, 1});
     lab.Layout.Row = k;  lab.Layout.Column = 1;
     edits(k) = uieditfield(lg, 'numeric', 'Value', paramDefs{k, 2}, ...
@@ -252,19 +248,18 @@ for k = 1:8
 end
 btn = uibutton(lg, 'Text', 'Apply system parameters', ...
                'ButtonPushedFcn', @(~,~) applyParamsCb());
-btn.Layout.Row = 9;  btn.Layout.Column = [1 2];
+btn.Layout.Row = 10;  btn.Layout.Column = [1 2];
 errLab = uilabel(lg, 'Text', '', 'FontColor', [0.8 0 0]);
-errLab.Layout.Row = 10;  errLab.Layout.Column = [1 2];
+errLab.Layout.Row = 11;  errLab.Layout.Column = [1 2];
 
 sliderDefs = { ...
     'defocus', 'Defocus W020 [waves]',                  -S.wMax, S.wMax, 8; ...
-    'band',    'Bandwidth d(lambda)/lambda (flat)',      0, 0.4,  0; ...
     'source',  'Source diameter [lambda/D]',             0, 16,   0; ...
     'jitter',  'Jitter RMS sigma [lambda/D]',            0, 4,    0; ...
     'motion',  'Motion blur per integration [um]',       0, 300,  0; ...
     'motdir',  'Motion direction [deg]',                 0, 180,  0};
 sld = struct();  rdo = struct();
-row = 11;
+row = 12;
 for k = 1:size(sliderDefs, 1)
     key = sliderDefs{k, 1};
     lab = uilabel(lg, 'Text', sliderDefs{k, 2});
@@ -301,7 +296,9 @@ renderCb();
     function applyParamsCb()
         v = arrayfun(@(e) e.Value, edits);
         try
-            S = setParams(S, v(1), v(2), v(3), v(4:6), v(7), v(8));
+            [lambda_nm, newBand] = cassegrain_spectrum.from_um(v(7), v(8));
+            S = setParams(S, v(1), v(2), v(3), v(4:6), lambda_nm, v(9));
+            b = newBand;
             errLab.Text = '';
         catch err
             errLab.Text = err.message;
@@ -312,7 +309,7 @@ renderCb();
     end
 
     function drawPupil()
-        [S, t] = getTier(S, S.tierTable(1, 2));
+        [S, t] = getTier(S, S.tierTable(1, 2), 2);
         mask = maskRho2(S, t, 1);
         npupBase = S.tierTable(1, 2);
         half = npupBase/2 + 24;
@@ -341,7 +338,6 @@ renderCb();
     function renderCb()
         lastRender = tic;
         w   = round(sld.defocus.Value * 2) / 2;
-        b   = round(sld.band.Value, 2);
         src = round(sld.source.Value * 4) / 4;
         jit = round(sld.jitter.Value, 1);
         motUm = round(sld.motion.Value);
@@ -349,7 +345,15 @@ renderCb();
         motLod = motUm / (S.lam * S.fnum * 1e6);   % um on sensor -> lambda/D
 
         tic;
-        [S, img] = computeImage(S, w, b, src, jit, motLod, mdir);
+        try
+            [S, img] = computeImage(S, w, b, src, jit, motLod, mdir);
+        catch err
+            if ~strcmp(err.identifier, 'cassegrain:sampling'), rethrow(err); end
+            if ~isempty(imH), imH.Visible = 'off'; end
+            title(axImg, 'No image for these settings');
+            status.Text = err.message;
+            return
+        end
         n = size(img, 1);
         half = cropHalf(S, w, src, jit, motLod, n);
         cc = n/2 + 1;
@@ -360,7 +364,8 @@ renderCb();
         stp = max(1, ceil(size(crop, 1) / 640));
         if stp > 1, crop = crop(1:stp:end, 1:stp:end); end
 
-        ext = double(half) * S.pixUm;
+        pixUm = S.lam * S.fnum / S.pad * 1e6;
+        ext = double(half) * pixUm;
         if chkLog.Value
             data = log10(double(crop) + 1e-8);  cl = [-6 0];
         else
@@ -371,7 +376,7 @@ renderCb();
             axis(axImg, 'image');  axImg.YDir = 'normal';
             xlabel(axImg, 'focal plane [um]');
         else
-            set(imH, 'CData', data, 'XData', [-ext ext], 'YData', [-ext ext]);
+            set(imH, 'CData', data, 'XData', [-ext ext], 'YData', [-ext ext], 'Visible', 'on');
             axImg.XLim = [-ext ext];  axImg.YLim = [-ext ext];
         end
         caxis(axImg, cl);                    % clim() needs R2022a+
@@ -380,14 +385,6 @@ renderCb();
 
         rdo.defocus.Text = sprintf('%+.1f waves   (dz ~ %+.1f mm)', ...
                                    w, w * S.dzPerWaveMm);
-        lam0 = S.lam * 1e9;
-        if b > 0
-            rdo.band.Text = sprintf(['d(lambda) ~ %.0f nm   ' ...
-                '(%.0f-%.0f nm, N_lambda = %d)'], b*lam0, ...
-                lam0*(1 - b/2), lam0*(1 + b/2), nLambda(S, w, b));
-        else
-            rdo.band.Text = '(monochromatic)';
-        end
         rdo.source.Text = sprintf('%.2f lambda/D   (= %.2f arcsec)', ...
                                   src, src * S.lodArcsec);
         rdo.jitter.Text = sprintf('%.2f lambda/D   (= %.2f arcsec RMS)', ...
@@ -399,9 +396,9 @@ renderCb();
         else
             rdo.motdir.Text = '(inactive)';
         end
-        status.Text = sprintf(['grid %d^2 | N_lambda %d | ' ...
+        status.Text = sprintf(['lambda0 %g um | bandwidth %.2f%% | grid %d^2 | N_lambda %d | ' ...
             'render %.0f ms | image pixel %.2f um'], ...
-            n, nLambda(S, w, b), dt*1e3, S.pixUm);
+            S.lam*1e6, 100*b, n, cassegrain_spectrum.n_lambda(w, b), dt*1e3, pixUm);
         drawnow limitrate
     end
 end
@@ -423,12 +420,26 @@ for k = 1:size(cases, 1)
     fprintf(['W020=%+6.1f  b=%4.2f  src=%4.1f  jit=%3.1f  ' ...
              'mot=%4.1f@%3.0f  Nl=%2d  grid=%4d^2  max=%.2f  ' ...
              'sum=%.3e  %5.0f ms\n'], w, b, src, jit, mot, mdir, ...
-            nLambda(S, w, b), size(img,1), max(img(:)), sum(img(:)), dt);
+            cassegrain_spectrum.n_lambda(w, b), size(img,1), max(img(:)), sum(img(:)), dt);
     assert(abs(max(img(:)) - 1) < 1e-6, 'normalization failed');
     assert(all(img(:) >= 0), 'negative intensities');
 end
 S = setParams(S, 300, 0.2, 1, [0 120 240], 650, 8);
 [~, img] = computeImage(S, 10, 0.1, 1, 0.2, 2, 30);
 assert(abs(max(img(:)) - 1) < 1e-6);
-fprintf('param change OK, image max=%.2f\nselftest passed\n', max(img(:)));
+fprintf('param change OK, image max=%.2f\n', max(img(:)));
+
+[lam, b] = cassegrain_spectrum.from_um(3.5, 5.5);
+S = setParams(S, 200, 0, 0, [90 210 330], lam, 10);
+[S, img] = computeImage(S, 0, b, 0, 0, 0, 0);
+pitch = S.lam * S.fnum / S.pad * 1e6;
+assert(abs(pitch - 17.5) < 1e-12);
+wavelengths = 3.5 + ((1:2048) - 0.5) * 2/2048;
+u = pi * (1:8)' * pitch ./ (10*wavelengths);
+weights = wavelengths.^-2;              % peak of a unit-flux clear-aperture PSF
+airy = (2*besselj(1,u)./u).^2 * weights' / sum(weights);
+cc = size(img,1)/2 + 1;
+err = max(abs(double(img(cc,cc+(1:8)))' - airy));
+assert(err < 0.001, 'MWIR Airy profile error');
+fprintf('3.5-5.5 um: pitch %g um, Airy profile max error %.2e of peak\nselftest passed\n', pitch, err);
 end

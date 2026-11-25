@@ -53,6 +53,11 @@ import numpy as np
 from scipy import fft as sfft
 from scipy.special import j1
 
+if __package__:
+    from . import cassegrain_spectrum as spectrum
+else:
+    import cassegrain_spectrum as spectrum
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "output"
 RAD_TO_ARCSEC = 180.0 / math.pi * 3600.0
@@ -121,6 +126,10 @@ class VideoParams:
         return self.lambda_nm * 1e-3 * self.fnum
 
     @property
+    def lf_min_um(self):
+        return self.lf_um * spectrum.short_rel(self.bandwidth)
+
+    @property
     def focal_mm(self):
         return self.d_mm * self.fnum
 
@@ -164,12 +173,12 @@ class VideoParams:
         def need(ok, msg):
             if not ok:
                 raise ValueError(msg)
-        need(self.d_mm > 0 and self.lambda_nm > 0 and self.fnum > 0,
-             "D, wavelength and F# must be positive")
+        need(self.d_mm > 0 and math.isfinite(self.lambda_nm) and self.lambda_nm > 0
+             and self.fnum > 0, "D and F# must be positive; wavelength must be finite and positive")
         need(0.0 <= self.obstruction <= 0.95, "obstruction must be in 0 .. 0.95")
         need(self.vane_mm >= 0, "vane width cannot be negative")
         need(len(self.vane_angles_deg) == 3, "three vane angles are required")
-        need(0.0 <= self.bandwidth <= 0.5, "bandwidth must be in 0 .. 0.5")
+        spectrum.n_lambda(self.defocus_waves, self.bandwidth)
         need(self.source_lod >= 0 and self.jitter_lod >= 0,
              "source size and jitter cannot be negative")
         need(8 <= self.width <= 16384 and 8 <= self.height <= 16384,
@@ -306,14 +315,13 @@ def apply_overrides(params, output, pairs):
 
 
 # ----------------------------------------------------------------- spot model
-def n_lambda(w020, bandwidth):
-    """Spectral samples for a flat band (same rule as cassegrain_gui.py)."""
-    if bandwidth <= 0:
-        return 1
-    return int(np.clip(3 + 20.0 * bandwidth + 0.7 * bandwidth * abs(w020), 3, 15))
+n_lambda = spectrum.n_lambda
 
 
 def _even_fast_len(n):
+    if not math.isfinite(n) or n > MAX_GRID:
+        raise ValueError(f"Required grid exceeds {MAX_GRID}²; narrow the band, reduce "
+                         "defocus or motion blur, or change the pixel pitch")
     k = sfft.next_fast_len(max(2, int(math.ceil(n))))
     while k % 2:
         k = sfft.next_fast_len(k + 1)
@@ -408,8 +416,7 @@ class SpotModel:
     """
 
     def __init__(self, p):
-        lam_min_f = p.lf_um * (1.0 - p.bandwidth / 2.0)
-        self.m = m = max(1, math.ceil(p.pixel_um / (0.5 * lam_min_f) - 1e-9))
+        self.m = m = max(1, math.ceil(p.pixel_um / (0.5 * p.lf_min_um) - 1e-9))
         self.delta = p.pixel_um / m
         self.pad0 = p.lf_um / self.delta            # fine samples per lambda0 F#
         # defocus phase step <= pi/2 per pupil sample: n_pupil >= 16 |W020|
@@ -641,6 +648,7 @@ class VideoSimulator:
             lambda_over_d_px=p.lf_um / p.pixel_um,
             lambda_over_d_arcsec=p.lf_um / p.pixel_um * p.pixel_arcsec,
             nyquist_ratio=0.5 * p.lf_um / p.pixel_um,
+            nyquist_ratio_min=0.5 * p.lf_min_um / p.pixel_um,
             donut_diameter_px=8.0 * abs(p.defocus_waves) * p.lf_um / p.pixel_um,
             speed_px_s=s, speed_um_s=s * p.pixel_um,
             speed_arcsec_s=s * p.pixel_arcsec, speed_deg_s=s * p.pixel_arcsec / 3600.0,
@@ -979,6 +987,16 @@ def selftest():
     check("energy conservation", max(abs(s - 1) for s in sums) < 1e-4,
           f"sum of pixel fractions = {min(sums):.6f} .. {max(sums):.6f}")
     check("sub-pixel centroid", max(errs) < 0.01, f"max error {max(errs):.4f} px")
+
+    # This band is wider than the old limit. A 20 um pixel samples the
+    # midpoint adequately at f/10 but undersamples the 3 um edge.
+    lam, b = spectrum.from_um(3, 6)
+    ir = VideoSimulator(VideoParams(lambda_nm=lam, bandwidth=b, pixel_um=20,
+                                    defocus_waves=0, speed=0, **quiet))
+    fraction = ir.model.crop_global(128, 128)[0].sum()
+    check("3–6 µm band, short-edge sampling",
+          ir.model.m == 2 and math.isclose(ir.derived()["nyquist_ratio_min"], 0.75)
+          and abs(fraction - 1) < 1e-4, f"oversampling {ir.model.m}, flux {fraction:.6f}")
 
     # motion blur adds L^2/12 along the motion direction to the covariance
     base = VideoParams(speed=0.0, defocus_waves=6.0, **quiet)

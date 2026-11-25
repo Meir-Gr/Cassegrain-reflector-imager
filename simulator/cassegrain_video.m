@@ -287,12 +287,12 @@ end
 end
 
 function validate_params(p)
-need(p.d_mm > 0 && p.lambda_nm > 0 && p.fnum > 0, ...
-     'D, wavelength and F# must be positive');
+need(p.d_mm > 0 && isfinite(p.lambda_nm) && p.lambda_nm > 0 && p.fnum > 0, ...
+     'D and F# must be positive; wavelength must be finite and positive');
 need(0.0 <= p.obstruction && p.obstruction <= 0.95, 'obstruction must be in 0 .. 0.95');
 need(p.vane_mm >= 0, 'vane width cannot be negative');
 need(numel(p.vane_angles_deg) == 3, 'three vane angles are required');
-need(0.0 <= p.bandwidth && p.bandwidth <= 0.5, 'bandwidth must be in 0 .. 0.5');
+n_lambda(p.defocus_waves, p.bandwidth);
 need(p.source_lod >= 0 && p.jitter_lod >= 0, 'source size and jitter cannot be negative');
 need(8 <= p.width && p.width <= 16384 && 8 <= p.height && p.height <= 16384, ...
      'image width and height must be 8 .. 16384 px');
@@ -420,6 +420,7 @@ end
 function s = scales(p)
 %SCALES The derived quantities of a parameter set in one struct.
 s.lf_um = lf_um(p);
+s.lf_min_um = s.lf_um * cassegrain_spectrum.short_rel(p.bandwidth);
 s.focal_mm = focal_mm(p);
 s.pixel_arcsec = pixel_arcsec(p);
 s.speed_px_s = speed_px_s(p);
@@ -533,7 +534,8 @@ try
     t0 = tic;
     sim = VideoSimulator(params);
 catch err
-    if any(strcmp(err.identifier, {'cassegrain_video:ValueError', 'cassegrain_video:OSError'}))
+    if any(strcmp(err.identifier, {'cassegrain_video:ValueError', 'cassegrain_video:OSError', ...
+                                    'cassegrain:spectrum', 'cassegrain:sampling'}))
         fprintf(2, 'error: %s\n', err.message);
         status = 2;
         return
@@ -679,20 +681,15 @@ end
 
 % ============================================================== spot model
 function nl = n_lambda(w020, bandwidth)
-% spectral samples for a flat band (same rule as cassegrain_gui.py)
-if bandwidth <= 0
-    nl = 1;
-else
-    nl = floor(min(max(3 + 20.0 * bandwidth + 0.7 * bandwidth * abs(w020), 3), 15));
-end
+nl = cassegrain_spectrum.n_lambda(w020, bandwidth);
 end
 
 function k = even_fast_len(n)
 % smallest even FFT length >= n with prime factors <= 11 (scipy next_fast_len)
-if isnan(n)
-    value_error('cannot convert float NaN to integer');
-elseif isinf(n)
-    error('cassegrain_video:OverflowError', '%s', 'cannot convert float infinity to integer');
+C = consts();
+if ~isfinite(n) || n > C.MAX_GRID
+    value_error(['Required grid exceeds %d^2; narrow the band, reduce defocus ' ...
+                 'or motion blur, or change the pixel pitch'], C.MAX_GRID);
 end
 k = next_fast_len(max(2, ceil(n)));
 while mod(k, 2)
@@ -847,7 +844,7 @@ function M = spot_model(p)
 % collected by each pixel.
 C = consts();
 lf = lf_um(p);
-lam_min_f = lf * (1.0 - p.bandwidth / 2.0);
+lam_min_f = lf * cassegrain_spectrum.short_rel(p.bandwidth);
 m = max(1, ceil(p.pixel_um / (0.5 * lam_min_f) - 1e-9));
 delta = p.pixel_um / m;
 pad0 = lf / delta;                       % fine samples per lambda0 F#
@@ -1122,6 +1119,7 @@ d.pixel_arcsec = pa;
 d.lambda_over_d_px = lf / p.pixel_um;
 d.lambda_over_d_arcsec = lf / p.pixel_um * pa;
 d.nyquist_ratio = 0.5 * lf / p.pixel_um;
+d.nyquist_ratio_min = d.nyquist_ratio * cassegrain_spectrum.short_rel(p.bandwidth);
 d.donut_diameter_px = 8.0 * abs(p.defocus_waves) * lf / p.pixel_um;
 d.speed_px_s = s;
 d.speed_um_s = s * p.pixel_um;
@@ -2137,6 +2135,16 @@ end
 check('energy conservation', max(abs(sums - 1)) < 1e-4, ...
       sprintf('sum of pixel fractions = %.6f .. %.6f', min(sums), max(sums)));
 check('sub-pixel centroid', max(errs) < 0.01, sprintf('max error %.4f px', max(errs)));
+
+[lam, b] = cassegrain_spectrum.from_um(3, 6);
+ir = VideoSimulator(VideoParams(with(quiet, 'lambda_nm', lam, 'bandwidth', b, ...
+                        'pixel_um', 20, 'defocus_waves', 0, 'speed', 0)));
+crop = crop_global(ir.model, 128, 128);
+d = ir.derived();
+fraction = sum(crop(:), 'double');
+check('3-6 um band, short-edge sampling', ir.model.m == 2 && ...
+      abs(d.nyquist_ratio_min - 0.75) < 1e-12 && abs(fraction - 1) < 1e-4, ...
+      sprintf('oversampling %d, flux %.6f', ir.model.m, fraction));
 
 % motion blur adds L^2/12 along the motion direction to the covariance
 base = VideoParams(with(quiet, 'speed', 0.0, 'defocus_waves', 6.0));

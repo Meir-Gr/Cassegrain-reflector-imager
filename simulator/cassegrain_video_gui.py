@@ -50,10 +50,10 @@ TABS = (
         ("obstruction", "Obstruction ratio d/D", "f"),
         ("vane_mm", "Vane width [mm]", "f"),
         ("vane_angles_deg", "Vane angles [deg]", "t"),
-        ("lambda_nm", "Wavelength [nm]", "f"),
+        ("lower_um", "Lower wavelength [µm]", "f"),
+        ("upper_um", "Upper wavelength [µm]", "f"),
         ("fnum", "Focal ratio F#", "f"),
         ("defocus_waves", "Defocus W020 [waves]", "f"),
-        ("bandwidth", "Bandwidth Δλ/λ (flat)", "f"),
         ("source_lod", "Source diameter [λ/D]", "f"),
         ("jitter_lod", "In-frame jitter RMS [λ/D]", "f"))),
     ("Camera", (
@@ -238,7 +238,12 @@ class App:
     def _set_values(self, params, output):
         self._loading = True
         try:
+            lower, upper = cv.spectrum.edges_um(params.lambda_nm, params.bandwidth)
+            edges = {"lower_um": lower, "upper_um": upper}
             for key, (var, kind) in self.vars.items():
+                if key in edges:
+                    var.set(str(edges[key]))
+                    continue
                 v = getattr(params if key in SIM_KEYS else output, key)
                 if kind == "b":
                     var.set(bool(v))
@@ -256,7 +261,11 @@ class App:
 
     def _read(self):
         sim, out = {}, {}
+        sim["lambda_nm"], sim["bandwidth"] = cv.spectrum.from_um(
+            self.vars["lower_um"][0].get(), self.vars["upper_um"][0].get())
         for key, (var, kind) in self.vars.items():
+            if key in ("lower_um", "upper_um"):
+                continue
             v = var.get()
             if kind == "c":
                 values, labels = CHOICES[key]
@@ -305,11 +314,11 @@ class App:
             return
         lod = p.lf_um / p.pixel_um
         s = p.speed_px_s
-        nyq = 0.5 * lod
+        nyq = 0.5 * p.lf_min_um / p.pixel_um
         bytes_px = 1 if p.bit_depth <= 8 else 2
         lines = [
             f"λ/D      {lod:.2f} px = {lod * p.pixel_arcsec:.3f}″",
-            f"pixel    {p.pixel_arcsec:.3f}″  ({'Nyquist-sampled' if nyq >= 1 else f'{nyq:.2f} × Nyquist'})",
+            f"pixel    {p.pixel_arcsec:.3f}″  ({nyq:.2f} × Nyquist at λmin)",
             f"donut ⌀  {8 * abs(p.defocus_waves) * lod:.0f} px",
             f"speed    {s:.1f} px/s = {s * p.pixel_um:.0f} µm/s",
             f"         = {s * p.pixel_arcsec:.2f}″/s = {s * p.pixel_arcsec / 3600:.4f}°/s",
@@ -753,10 +762,10 @@ class App:
             return
         try:
             params, out = cv.load_config(path)
+            self._set_values(params, out)
         except (ValueError, OSError) as exc:
             self.err.config(text=f"{Path(path).name}: {exc}")
             return
-        self._set_values(params, out)
         self._edited()
         self.status.config(text=f"loaded {path}")
 

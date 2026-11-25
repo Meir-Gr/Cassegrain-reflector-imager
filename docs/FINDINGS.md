@@ -303,23 +303,23 @@ and the vane width instead controls the **shadow depth**:
 ## 7. Interactive simulators
 
 Two feature-identical real-time simulators accompany the study: a
-Python/Tkinter application (cassegrain_gui.py) and a single-file MATLAB port
+Python/Tkinter application (cassegrain_gui.py) and a MATLAB port
 (cassegrain_simulator.m, R2019b+, no toolboxes). Both expose the full model of
 this report at interactive speed.
 
-![The Python simulator: system parameters and live sliders (left), pupil and resulting image (right). Shown: W020 = +16 waves, Δλ/λ = 0.10, source ⌀ 2 λ/D.](figures/cassegrain_gui_screenshot.png)
+![Example from the earlier slider UI: W020 = +16 waves, Δλ/λ = 0.10, source ⌀ 2 λ/D. The equivalent band endpoints are 0.5225 and 0.5775 µm.](figures/cassegrain_gui_screenshot.png)
 
 **System parameters** (text fields, applied together, with validation):
 primary diameter $D$ [mm], obstruction ratio $\varepsilon$, vane width [mm],
-three independent vane angles [deg] (asymmetric spiders allowed), wavelength
-$\lambda$ [nm], focal ratio $F\#$.
+three independent vane angles [deg] (asymmetric spiders allowed), lower and
+upper wavelength [µm], focal ratio $F\#$. Equal endpoints are monochromatic;
+otherwise the simulator adds flat-band intensities on a common grid (THEORY §7.3).
 
 **Live controls** (sliders, with physical readouts under each):
 
 | Control | Range | Physics applied |
 | --- | --- | --- |
 | Defocus $W_{020}$ | ±64 waves, 0.5 steps | quadratic pupil phase; readout shows $\Delta z$ [mm] |
-| Bandwidth $\Delta\lambda/\lambda$ | 0–0.4, flat spectrum | incoherent sum of 3–15 sub-wavelength PSFs (pupil rescaling, $W_{020} \propto 1/\lambda$) |
 | Source diameter | 0–16 $\lambda/D$ | uniform-disk visibility $2J_1(x)/x$; arcsec readout |
 | Jitter RMS $\sigma$ | 0–4 $\lambda/D$ | Gaussian MTF $\mathrm{exp}(-2\pi^2\sigma^2 q^2)$ |
 | Motion blur | 0–300 µm on sensor, direction 0–180° | drift MTF $\mathrm{sinc}(L\,q_{\parallel})$; smear length per integration |
@@ -329,14 +329,13 @@ and the resulting image (focal-plane µm axes, γ = 0.5 stretch, optional log
 stretch for in-focus detail), with the predicted donut diameter in the title
 and a status bar showing grid size, $N_\lambda$ and render time.
 
-**Numerics** — identical to the batch scripts: adaptive pupil sampling
+**Numerics** — adaptive pupil sampling
 (512/1024 samples for $|W_{020}| \leq$ 32/64, the same $16|W_{020}|$
-anti-aliasing rule), Nyquist image sampling ($\lambda F\#/2$ per pixel),
+anti-aliasing rule), short-edge Nyquist image sampling ($\lambda_{\min} F\#/2$ per pixel),
 single precision. Grid geometry, the PSF spectrum (keyed by defocus ×
 bandwidth) and the combined blur MTF are cached, so only the slider being
-moved re-triggers its expensive stage. Typical render times: ~0.1 s
-monochromatic, ~0.6 s polychromatic, a few seconds at maximum bandwidth ×
-defocus. Images are peak-normalized (no absolute photometry).
+moved re-triggers its expensive stage. Broad bands at large defocus can
+require many FFTs. Images are peak-normalized (no absolute photometry).
 
 Both programs include a headless self-test (`python simulator/cassegrain_gui.py
 --selftest` / `cassegrain_simulator selftest`) printing identical validation
@@ -352,7 +351,7 @@ cases, so the two implementations can be cross-checked line by line.
 | cassegrain_vibration_sim.py | Vibration blur: random jitter and sinusoidal resonance, ring-contrast analysis | cassegrain_vibration_gallery.png, cassegrain_vibration_ring_contrast.png, cassegrain_vibration_extended_source.png |
 | cassegrain_arago_vs_source.py | Central (Arago) spot vs source size | cassegrain_arago_vs_source_gallery.png, cassegrain_arago_vs_source_metrics.png |
 | cassegrain_gui.py | Interactive simulator (Tkinter): all effects of this report in real time | — (interactive) |
-| cassegrain_simulator.m | Single-file MATLAB port of the simulator (R2019b+, no toolboxes) | — (interactive) |
+| cassegrain_simulator.m | MATLAB port of the simulator (R2019b+, no toolboxes) | — (interactive) |
 
 Batch scripts live in studies/ and the simulators in simulator/. Run from the
 project folder with `python studies/<script>.py` (requires numpy, matplotlib,

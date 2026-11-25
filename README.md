@@ -58,6 +58,64 @@ cassegrain_video run.json --set speed=500  % video simulator (script)
 cassegrain_video --selftest                % headless check
 ```
 
+## Wavelength bands, including MWIR
+
+In either still-image GUI enter **Lower wavelength [µm]** and **Upper
+wavelength [µm]**, then **Apply system parameters**. The video GUIs have the
+same fields on the **Optics** tab. Use `3.5` and `5.5` for the MWIR example,
+or enter the same value twice for monochromatic light (`0.55` is the original
+550 nm default). These are passband edges, not centre and half-width.
+
+Video JSON and command-line settings retain their original units: `lambda_nm`
+is the arithmetic midpoint in **nm**; `bandwidth` is full width divided by
+that midpoint. For 3.5–5.5 µm use `lambda_nm=4500` and
+`bandwidth=0.4444444444444444`. Wider bands are supported; an explicit error
+is reported if the band and defocus need too large a grid or too many spectral
+samples. Wide, strongly defocused bands take longer to render.
+
+To write a video configuration for this band without rendering frames, run
+the following from the repository root. Set the camera pixel pitch and noise
+levels in `mwir.json` to match your detector before running the simulation.
+
+```sh
+python -m simulator.cassegrain_video --set lambda_nm=4500 --set bandwidth=0.4444444444444444 --write-config mwir.json
+```
+
+**What transfers to IR:** the on-axis diffraction pattern of an ideal
+all-mirror telescope. The angular scale is λ/D, and the focal-plane scale
+is λ × F-number. At f/10 the 3.5 µm edge requires a pitch of **17.5 µm or
+finer** to Nyquist-sample the full band. This is the still simulator's
+computational pitch, not a requirement for running the video model: enter
+the camera's actual pixel pitch there to see the effect of undersampling.
+When comparing bands at the same physical focus offset, keep Δz fixed,
+**not** the number of waves at the midpoint.
+
+**What does not transfer automatically:** real MWIR spectral response or
+sensitivity. Equal wavelength intervals contribute equal integrated signal
+here. For a thermal source and a real photon detector the weights depend on
+source temperature/emissivity, atmospheric and optical transmission, and
+detector quantum efficiency. Warm optics and sky also *add* background.
+The video model accepts measured signal, background and dark-current rates;
+it does not predict them from temperature or from the band edges. See
+[the polychromatic model and its limits](docs/THEORY.md#73-polychromatic-light-implemented-in-the-interactive-simulators).
+
+### Python still-image preview performance
+
+The speedup is automatic; it does not drop wavelengths or coarsen the grid.
+The simulator builds each pupil only within its bounding box. For a point
+source with no jitter or motion, the GUI computes only the displayed Fourier
+bins. If the brightest pixel might be outside the crop, it uses the full
+field to preserve peak normalization. For an extended source or any blur,
+it blurs the full field **before** cropping so light from outside the view
+is included. `OpticalModel.image()` still returns the entire grid.
+
+For example, at **3.5–5.5 µm, f/10, and 8 waves of defocus**, the unblurred
+point-source preview went from **1.80 s to 0.24 s** on the benchmark machine
+(7.4×; median of five fresh calculations, excluding startup and screen
+drawing). Both versions used 14 wavelengths on the same 1344 × 1344 grid;
+the largest displayed pixel difference was under 0.000001 on a 0–1 scale.
+This timing is for the Python still-image GUI, not MATLAB or the video simulator.
+
 ## Video simulator
 
 Renders a frame sequence of the spot as a real camera records it, with the

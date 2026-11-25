@@ -56,10 +56,10 @@ TABS = { ...
         'obstruction', 'Obstruction ratio d/D', 'f'
         'vane_mm', 'Vane width [mm]', 'f'
         'vane_angles_deg', 'Vane angles [deg]', 't'
-        'lambda_nm', 'Wavelength [nm]', 'f'
+        'lower_um', 'Lower wavelength [µm]', 'f'
+        'upper_um', 'Upper wavelength [µm]', 'f'
         'fnum', 'Focal ratio F#', 'f'
         'defocus_waves', 'Defocus W020 [waves]', 'f'
-        'bandwidth', 'Bandwidth Δλ/λ (flat)', 'f'
         'source_lod', 'Source diameter [λ/D]', 'f'
         'jitter_lod', 'In-frame jitter RMS [λ/D]', 'f'}
     'Camera', { ...
@@ -466,11 +466,16 @@ edited();
     end
 
     function set_values(p, o)
+        [lo, hi] = cassegrain_spectrum.edges_um(p.lambda_nm, p.bandwidth);
+        edges = struct('lower_um', lo, 'upper_um', hi);
         keys = fieldnames(vars);
         for n = 1:numel(keys)
             key = keys{n};
             v = vars.(key);
-            if any(strcmp(key, cv.PARAM_FIELDS))
+            if isfield(edges, key)
+                set(v.h, 'String', cv.json_dumps(edges.(key)));
+                continue
+            elseif any(strcmp(key, cv.PARAM_FIELDS))
                 val = p.(key);
             else
                 val = o.(key);
@@ -502,9 +507,12 @@ edited();
     function [p, o] = read_fields()
         sim_d = struct();
         out_d = struct();
+        [sim_d.lambda_nm, sim_d.bandwidth] = cassegrain_spectrum.from_um( ...
+            str2double(get(vars.lower_um.h, 'String')), str2double(get(vars.upper_um.h, 'String')));
         keys = fieldnames(vars);
         for n = 1:numel(keys)
             key = keys{n};
+            if any(strcmp(key, {'lower_um', 'upper_um'})), continue; end
             v = vars.(key);
             switch v.kind
                 case 'b'
@@ -573,16 +581,11 @@ edited();
         s = cv.scales(p);
         lod = s.lf_um / p.pixel_um;
         v = s.speed_px_s;
-        nyq = 0.5 * lod;
+        nyq = 0.5 * s.lf_min_um / p.pixel_um;
         bytes_px = 1 + (p.bit_depth > 8);
-        if nyq >= 1
-            sampling = 'Nyquist-sampled';
-        else
-            sampling = sprintf('%.2f × Nyquist', nyq);
-        end
         lines = { ...
             sprintf('λ/D      %.2f px = %.3f″', lod, lod * s.pixel_arcsec)
-            sprintf('pixel    %.3f″  (%s)', s.pixel_arcsec, sampling)
+            sprintf('pixel    %.3f″  (%.2f × Nyquist at λmin)', s.pixel_arcsec, nyq)
             sprintf('donut ⌀  %.0f px', 8 * abs(p.defocus_waves) * lod)
             sprintf('speed    %.1f px/s = %.0f µm/s', v, v * p.pixel_um)
             sprintf('         = %.2f″/s = %.4f°/s', v * s.pixel_arcsec, v * s.pixel_arcsec / 3600)

@@ -21,7 +21,10 @@ def main():
     app = G.App(root)
     # representative state: polychromatic donut of a small extended source
     app.sliders["defocus"].set(16.0)
-    app.sliders["bandwidth"].set(0.10)
+    for key, value in (("lower_um", "0.5225"), ("upper_um", "0.5775")):
+        app.entries[key].delete(0, tk.END)
+        app.entries[key].insert(0, value)
+    app._apply_params()
     app.sliders["source"].set(2.0)
     root.update_idletasks()
     root.update()

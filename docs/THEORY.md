@@ -256,8 +256,10 @@ robust.
 
 ### 7.3 Polychromatic light (implemented in the interactive simulators)
 
-The interactive simulators (cassegrain_gui.py, cassegrain_simulator.m) model
-finite bandwidth; the batch study scripts remain monochromatic. The model is
+The still-image and video simulators model finite bandwidth; the batch
+study scripts remain monochromatic. Enter the lower and upper edges in µm
+(equal edges select a single wavelength). The reference wavelength is the
+arithmetic midpoint, not a source-weighted effective wavelength. The model is
 a **flat (top-hat) spectrum** of fractional width $b = \Delta\lambda/\lambda_0$,
 realized as an incoherent, equal-energy sum of $N_\lambda$ monochromatic PSFs:
 
@@ -277,10 +279,17 @@ Implementation choices and their justification:
   sample, $8\pi W(\lambda)/N_{pupil}(\lambda)$, is $\lambda$-independent, so
   the anti-aliasing criterion of §4.1 is inherited unchanged for every
   sub-wavelength.
-- **Adaptive $N_\lambda$ (3–15).** Chosen so adjacent sub-images shift by
-  less than about one ring width at the donut rim; too few samples would
-  produce spurious families of discrete rings instead of a smooth chromatic
-  smear.
+- **Adaptive spectral sampling.** Equal-width midpoint bins are at most
+  one tenth of the shortest wavelength. The rim defocus changes by at most
+  half a wave per bin, using its steepest slope at the short edge. If more
+  than 128 bins would be needed the simulator rejects the settings instead
+  of silently capping the count. This quadrature is intended for image
+  structure, not high-precision far-wing photometry.
+- **Short-edge spatial sampling.** The still-image pitch is
+  $\lambda_{\min} F\#/2$, so the incoherent intensity cutoff is sampled for
+  the entire band. The video model integrates on a grid at least this fine
+  before sampling at the *actual* camera pitch; a coarse detector can still
+  alias. The largest allowed FFT sides are 3072 (still) and 8192 (video).
 
 Physical consequences (visible in the simulators): fringes and rings smear
 radially in proportion to $b$ times their distance from the achromatic
@@ -290,19 +299,35 @@ $\lambda$).
 
 Remaining assumptions and limits of the polychromatic model:
 
-- **Flat spectrum in energy** — no source color, filter transmission curve,
-  or detector QE weighting (a weighted sum over $\lambda_k$ is a trivial
-  extension).
+- **Flat effective signal per unit wavelength.** Each monochromatic PSF has
+  the same integrated signal, not the same peak. For predicted photoelectrons
+  from spectral energy flux $F_\lambda$, the bin weights should instead be
+  proportional to $F_\lambda T_{atm} T_{opt} QE\,\lambda\,\Delta\lambda/(hc)$.
+  Here $T_{opt}$ includes mirrors, windows and filter. If the input is
+  already a photon spectrum, do not apply the $\lambda/(hc)$ conversion
+  a second time.
 - **All-reflective optics** — no chromatic focus shift. Catadioptric systems
   (corrector plates) add real longitudinal chromatism that must be modeled
   as a $\lambda$-dependent $\Delta z$.
 - **No atmospheric dispersion** — the prism-like elongation of broadband
   images at low elevation is not modeled.
-- **Blue-edge sampling margin** — for $b \gtrsim 0.2$ the bluest sub-pupils
-  slightly exceed the pad-2 Nyquist margin of §4.2 (intensity spectrum
-  extends beyond the band edge by up to $1/(1-b/2)$); the aliased content is
-  far below the displayed contrast floor but would matter for precision
-  far-wing photometry.
+
+**MWIR example.** For 3.5–5.5 µm, $\lambda_0 = 4.5$ µm and $b=2/4.5$.
+At f/10 the midpoint diffraction scale is 45 µm and the short-edge sampling
+limit is 17.5 µm. Compare the *same physical* focus offset: 8 waves at
+550 nm corresponds to about 0.98 waves at 4.5 µm for the same focal ratio.
+Likewise, hold source size and jitter fixed in arcseconds rather than in
+midpoint $\lambda_0/D$ when comparing the same scene.
+
+An ideal scalar diffraction PSF remains applicable in this band; a real
+thermal camera is not just a change of wavelength. A thermal source needs
+a temperature/emissivity spectrum, a ground path can have strong absorption
+(notably CO₂ near 4.3 µm), and warm optics and sky emit background of their
+own. Detector cutoff, cooling, dark current and measured background matter
+for counts and noise. The model does not infer these quantities from band
+edges: use measured electron rates in the video simulator. For examples of
+instrument/source weighting see STScI's STPSF documentation; for site-dependent
+transmission and sky emission see ESO SkyCalc.
 
 ### 7.4 Where each headline result stops holding
 
